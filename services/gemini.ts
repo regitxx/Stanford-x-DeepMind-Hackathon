@@ -11,7 +11,15 @@ function getApiKey(): string {
 
 let client: GoogleGenAI | null = null;
 function ai(): GoogleGenAI {
-  if (!client) client = new GoogleGenAI({ apiKey: getApiKey() });
+  if (!client) {
+    const key = getApiKey();
+    // Key present (local dev / AI Studio / Node scripts) → talk to Gemini directly.
+    // No key baked into the bundle (production container) → route through our server-side
+    // proxy at /api/genai, which injects the real key. 'proxy' is a placeholder, never used.
+    client = key
+      ? new GoogleGenAI({ apiKey: key })
+      : new GoogleGenAI({ apiKey: 'proxy', httpOptions: { baseUrl: '/api/genai' } });
+  }
   return client;
 }
 
