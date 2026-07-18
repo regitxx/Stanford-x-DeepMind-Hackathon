@@ -12,7 +12,7 @@ export interface Source {
   kind: 'paper' | 'repo';
   title: string;
   url: string;
-  origin: 'arXiv' | 'GitHub';
+  origin: string; // 'arXiv' | 'GitHub' | 'Paper' | … (widened for the papers fallback ladder)
   snippet: string; // abstract or README excerpt (truncated)
   meta?: string; // authors/year or stars/language
 }

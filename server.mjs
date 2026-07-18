@@ -14,6 +14,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const HOST = '0.0.0.0';
 const UPSTREAM = 'https://generativelanguage.googleapis.com';
 const GENAI_PREFIX = '/api/genai/';
+const ARXIV_UPSTREAM = 'https://export.arxiv.org';
+const ARXIV_PATH = '/api/arxiv';
 
 // Key is read at request time from the environment — never baked into the bundle, never logged.
 const apiKey = () => process.env.GEMINI_API_KEY || process.env.API_KEY || '';
@@ -74,6 +76,25 @@ async function proxyGenai(req, res) {
   }
 }
 
+// Same-origin arXiv rail — forwards q & max to export.arxiv.org and returns the Atom XML,
+// sidestepping browser CORS. 502 plain text if the upstream is unreachable or errors.
+async function proxyArxiv(req, res) {
+  const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const q = u.searchParams.get('q') || '';
+  const max = u.searchParams.get('max') || '5';
+  const target = `${ARXIV_UPSTREAM}/api/query?search_query=all:${encodeURIComponent(q)}&max_results=${encodeURIComponent(max)}&sortBy=relevance`;
+  try {
+    const upstream = await fetch(target);
+    if (!upstream.ok) throw new Error(`arXiv HTTP ${upstream.status}`);
+    const xml = await upstream.text();
+    res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8' });
+    res.end(xml);
+  } catch (err) {
+    res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(`arXiv upstream failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // Serve a static file from ./dist, with SPA fallback to index.html.
 async function serveStatic(req, res) {
   // Resolve requested path under ROOT, blocking traversal.
@@ -102,10 +123,18 @@ async function serveStatic(req, res) {
 }
 
 const server = createServer((req, res) => {
-  if ((req.url || '').startsWith(GENAI_PREFIX)) {
+  const url = req.url || '';
+  if (url.startsWith(GENAI_PREFIX)) {
     proxyGenai(req, res).catch(() => {
       res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('Internal Server Error');
+    });
+    return;
+  }
+  if (url === ARXIV_PATH || url.startsWith(`${ARXIV_PATH}?`)) {
+    proxyArxiv(req, res).catch(() => {
+      res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('arXiv upstream failed');
     });
     return;
   }

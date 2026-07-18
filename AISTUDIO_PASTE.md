@@ -213,7 +213,7 @@ export interface Source {
   kind: 'paper' | 'repo';
   title: string;
   url: string;
-  origin: 'arXiv' | 'GitHub';
+  origin: string; // 'arXiv' | 'GitHub' | 'Paper' | … (widened for the papers fallback ladder)
   snippet: string; // abstract or README excerpt (truncated)
   meta?: string; // authors/year or stars/language
 }
@@ -894,16 +894,69 @@ async function fetchText(url: string): Promise<string> {
   return r.text();
 }
 
-// Try direct first; on ANY failure (CORS, network, non-200) retry once through a
-// public CORS proxy. `via` tells the caller which path actually produced the results.
-export async function searchArxiv(query: string, max: number): Promise<{ items: Omit<Source, 'id'>[]; via: 'direct' | 'proxy' }> {
+// ---------------- Semantic Scholar (last-resort rail) ----------------
+
+interface S2Paper {
+  title?: string;
+  abstract?: string | null;
+  year?: number | null;
+  authors?: { name: string }[];
+  externalIds?: { ArXiv?: string } | null;
+  url?: string;
+}
+
+// Map a Semantic Scholar search response to Sources. Items without an abstract are skipped
+// (nothing for the Analyst to read). arXiv-backed papers are normalized to an arxiv.org URL.
+export function mapSemanticScholar(data: { data?: S2Paper[] }): Omit<Source, 'id'>[] {
+  return (data.data ?? []).flatMap((p) => {
+    if (!p.title || !p.abstract) return [];
+    const arxivId = p.externalIds?.ArXiv;
+    const url = arxivId ? `https://arxiv.org/abs/${arxivId}` : (p.url ?? '');
+    if (!url) return [];
+    const authors = (p.authors ?? []).map((a) => a.name).filter(Boolean);
+    return [{
+      kind: 'paper' as const,
+      origin: arxivId ? 'arXiv' : 'Paper',
+      title: clean(p.title),
+      url,
+      snippet: cut(clean(p.abstract), 900),
+      meta: [authors.slice(0, 3).join(', ') + (authors.length > 3 ? ' et al.' : ''), p.year ? String(p.year) : '']
+        .filter(Boolean).join(' · '),
+    }];
+  });
+}
+
+async function searchSemanticScholar(query: string, max: number): Promise<Omit<Source, 'id'>[]> {
+  const url = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query)}&limit=${max}&fields=title,abstract,year,authors,externalIds,url`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`Semantic Scholar HTTP ${r.status}`);
+  return mapSemanticScholar((await r.json()) as { data?: S2Paper[] });
+}
+
+// Papers fallback ladder — try each rail in order, first NON-EMPTY result wins, so browser
+// CORS or a flaky arXiv can't leave a run without papers. Logs which rail served.
+export async function fetchPapers(query: string, max: number, log: (t: string) => void): Promise<Omit<Source, 'id'>[]> {
   const direct = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&max_results=${max}&sortBy=relevance`;
-  try {
-    return { items: parseArxivAtom(await fetchText(direct)), via: 'direct' };
-  } catch {
-    const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(direct)}`;
-    return { items: parseArxivAtom(await fetchText(proxied)), via: 'proxy' };
+  const rails: { label: string; run: () => Promise<Omit<Source, 'id'>[]> }[] = [
+    // a. same-origin app proxy (works when served by our server.mjs; throws on relative URL in Node)
+    { label: 'arXiv via app proxy', run: async () => parseArxivAtom(await fetchText(`/api/arxiv?q=${encodeURIComponent(query)}&max=${max}`)) },
+    // b. direct to arXiv
+    { label: 'arXiv direct', run: async () => parseArxivAtom(await fetchText(direct)) },
+    // c. arXiv through a public CORS proxy
+    { label: 'arXiv via public proxy', run: async () => parseArxivAtom(await fetchText(`https://api.allorigins.win/raw?url=${encodeURIComponent(direct)}`)) },
+    // d. Semantic Scholar
+    { label: 'papers via Semantic Scholar', run: () => searchSemanticScholar(query, max) },
+  ];
+  for (const rail of rails) {
+    try {
+      const items = await rail.run();
+      if (items.length) {
+        log(`${rail.label}: ${items.length} papers found`);
+        return items;
+      }
+    } catch { /* try the next rail */ }
   }
+  return [];
 }
 
 // ---------------- GitHub ----------------
@@ -957,23 +1010,27 @@ function stripMarkdown(md: string): string {
 // ---------------- Combined ----------------
 
 export async function gatherSources(arxivQueries: string[], githubQueries: string[], log: (t: string) => void): Promise<Source[]> {
+  const perQueryMax = Math.ceil(SOURCE_LIMITS.arxiv / Math.min(Math.max(arxivQueries.length, 1), 2));
   const paperBatches = await Promise.allSettled(
-    arxivQueries.slice(0, 2).map((q) => searchArxiv(q, Math.ceil(SOURCE_LIMITS.arxiv / Math.min(arxivQueries.length, 2)))),
+    arxivQueries.slice(0, 2).map((q) => fetchPapers(q, perQueryMax, log)),
   );
-  const fulfilledPapers = paperBatches.flatMap((b) => (b.status === 'fulfilled' ? [b.value] : []));
-  const papers = fulfilledPapers.flatMap((r) => r.items);
-  const viaProxy = fulfilledPapers.some((r) => r.via === 'proxy');
-  if (papers.length) log(`arXiv ${viaProxy ? 'via proxy' : 'direct'}: ${papers.length} papers found`);
-  else log('arXiv unavailable — continuing with GitHub only');
+  const papers = paperBatches.flatMap((b) => (b.status === 'fulfilled' ? b.value : []));
+
+  // If every papers rail came up empty, widen the GitHub target so runs never feel thin.
+  const githubTarget = papers.length ? SOURCE_LIMITS.github : 5;
+  if (!papers.length) log(`No papers found — widening GitHub search to ${githubTarget} repos.`);
 
   const repoBatches = await Promise.allSettled(
-    githubQueries.slice(0, 2).map((q) => searchGithub(q, 2)),
+    githubQueries.slice(0, 2).map((q) => searchGithub(q, githubTarget)),
   );
   const repos = repoBatches.flatMap((b) => (b.status === 'fulfilled' ? b.value : []));
   log(`GitHub: ${repos.length} repositories found`);
 
+  const seenRepo = new Set<string>();
+  const uniqueRepos = repos.filter((r) => (seenRepo.has(r.url) ? false : (seenRepo.add(r.url), true)));
+
   const seen = new Set<string>();
-  const merged = [...papers.slice(0, SOURCE_LIMITS.arxiv), ...repos.slice(0, SOURCE_LIMITS.github)]
+  const merged = [...papers.slice(0, SOURCE_LIMITS.arxiv), ...uniqueRepos.slice(0, githubTarget)]
     .filter((s) => (seen.has(s.url) ? false : (seen.add(s.url), true)))
     .slice(0, SOURCE_LIMITS.total);
 
