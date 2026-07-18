@@ -18,7 +18,7 @@ export const ARCHITECT_SYSTEM = `You are Architect, a pragmatic systems designer
 
 Mermaid rules (strict): output "flowchart TD" only; node ids A, B, C...; every label in double quotes; no parentheses, brackets, semicolons or the word "end" inside labels; max 12 nodes; edges may have short labels. Example: A["User"] -->|"idea"| B["Scout agent"].
 
-Also produce a comparison table: 5-6 criteria rows (e.g. time to MVP, scaling ceiling, consistency/quality, cost per query, ops complexity, defensibility), values aligned to the variants order, each value under 8 words. Output JSON only.`;
+Also produce a comparison table: 5-6 criteria rows (e.g. time to MVP, scaling ceiling, consistency/quality, cost per query, ops complexity, defensibility), values aligned to the variants order, each value under 8 words. Output JSON only. When a component is an LLM, VLM, or embedding service, name it generically (e.g. "vision-language model API") or as Gemini; name a specific third-party model only if a cited source is specifically about that model.`;
 
 // ---------------------------------------------------------------------------
 // CACHED DEMO RUNS — pre-verified real sources. The playcast is recorded on

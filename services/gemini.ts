@@ -3,9 +3,10 @@ import { ANALYST_SYSTEM, ARCHITECT_SYSTEM, MODEL, SCOUT_SYSTEM } from '../consta
 import type { ComparisonRow, Insight, Source, Variant } from '../types';
 
 function getApiKey(): string {
-  // AI Studio injects process.env.API_KEY (server-side after deploy). Vite define covers local dev.
-  const fromEnv = typeof process !== 'undefined' ? process.env?.API_KEY : undefined;
-  return fromEnv || (import.meta as any)?.env?.VITE_GEMINI_API_KEY || '';
+  // Vite's define replaces the literal `process.env.API_KEY` at build time; the try/catch
+  // guards Node (where process exists) and the browser (where it may not) alike.
+  try { if (process.env.API_KEY) return process.env.API_KEY; } catch { /* browser */ }
+  return (import.meta as any)?.env?.VITE_GEMINI_API_KEY || '';
 }
 
 let client: GoogleGenAI | null = null;
