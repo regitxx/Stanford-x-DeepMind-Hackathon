@@ -90,6 +90,14 @@
     background: var(--cyan); color: #06131f; border: 0; padding: 0 26px; border-radius: 2px; cursor: pointer;
   }
   .run:disabled { opacity: .45; cursor: default; }
+  .results-wrap { min-width: 0; }
+  .refine-bar { display: flex; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .refine-input {
+    flex: 1; background: var(--paper-2); border: 1px solid var(--line); color: var(--ink);
+    font-family: var(--body); font-size: 15px; padding: 12px 14px; border-radius: 2px; min-width: 0;
+  }
+  .refine-input:focus-visible, .refine-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .refine-btn { font-size: 14px; padding: 0 22px; }
   .demo-row { margin-top: 12px; align-items: center; }
   .demo-label { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); margin-right: 4px; }
   .error { color: var(--err); margin: 10px 0 0; }
@@ -846,7 +854,13 @@ export const ARCHITECT_SYSTEM = `You are Architect, a pragmatic systems designer
 
 Mermaid rules (strict): output "flowchart TD" only; node ids A, B, C...; every label in double quotes; no parentheses, brackets, semicolons or the word "end" inside labels; max 12 nodes; edges may have short labels. Example: A["User"] -->|"idea"| B["Scout agent"].
 
-Also produce a comparison table: 5-6 criteria rows (e.g. time to MVP, scaling ceiling, consistency/quality, cost per query, ops complexity, defensibility), values aligned to the variants order, each value under 8 words. Output JSON only. When a component is an LLM, VLM, or embedding service, name it generically (e.g. "vision-language model API") or as Gemini; name a specific third-party model only if a cited source is specifically about that model. Prefer 3 variants when the sources support three distinct profiles.`;
+Also produce a comparison table: 5-6 criteria rows (e.g. time to MVP, scaling ceiling, consistency/quality, cost per query, ops complexity, defensibility), values aligned to the variants order, each value under 8 words. The table MUST include a row with criterion exactly "Rough monthly cost (cloud + LLM)" whose values are order-of-magnitude estimates like "~$20/mo", "~$200/mo", "~$2k/mo" — clearly rough, derived from that variant's architecture (compute + storage + LLM/API calls). Output JSON only. When a component is an LLM, VLM, or embedding service, name it generically (e.g. "vision-language model API") or as Gemini; name a specific third-party model only if a cited source is specifically about that model. Prefer 3 variants when the sources support three distinct profiles.`;
+
+// Refine mode reuses every ARCHITECT_SYSTEM rule (mermaid, citations, cost row) and adds the
+// revise-in-place instruction, so refined output stays schema- and citation-compliant.
+export const ARCHITECT_REFINE_SYSTEM = `${ARCHITECT_SYSTEM}
+
+REFINE MODE: You are given the previous variants and a user instruction. Revise those variants to satisfy the instruction, grounded ONLY in the same source insights provided — do not invent new sources, capabilities, or citations. The citation rule is unchanged: every component must cite at least one sourceId. Keep each variant's id and profile stable where sensible so the result can be diffed against the previous version. If the instruction cannot be satisfied by these sources, keep the closest compliant design and explain in that variant's risks exactly why the sources can't support it.`;
 
 // ---------------------------------------------------------------------------
 // CACHED DEMO RUNS — real live pipeline runs captured by scripts/generate-examples.ts.
@@ -1043,7 +1057,7 @@ export async function gatherSources(arxivQueries: string[], githubQueries: strin
 
 ````ts
 import { GoogleGenAI, Type } from '@google/genai';
-import { ANALYST_SYSTEM, ARCHITECT_SYSTEM, MODEL, SCOUT_SYSTEM } from '../constants';
+import { ANALYST_SYSTEM, ARCHITECT_REFINE_SYSTEM, ARCHITECT_SYSTEM, MODEL, SCOUT_SYSTEM } from '../constants';
 import type { ComparisonRow, Insight, Source, Variant } from '../types';
 
 function getApiKey(): string {
@@ -1205,17 +1219,22 @@ const architectSchema = {
   required: ['variants', 'comparison'],
 };
 
-export async function synthesizeArchitectures(
-  topic: string,
-  sources: Source[],
-  insights: Insight[],
-): Promise<{ variants: Variant[]; comparison: ComparisonRow[] }> {
-  const brief = insights
+// Shared source brief for both synthesize and refine — one line block per insight.
+function buildBrief(sources: Source[], insights: Insight[]): string {
+  return insights
     .map((i) => {
       const s = sources.find((x) => x.id === i.sourceId);
       return `[${i.sourceId}] ${s?.title ?? ''}\narchitecture: ${i.architecture}\nalgorithm: ${i.algorithmOrMath}\nlimitations: ${i.limitations}\nmetrics: ${i.metrics}\nrelevance: ${i.relevance}`;
     })
     .join('\n\n');
+}
+
+export async function synthesizeArchitectures(
+  topic: string,
+  sources: Source[],
+  insights: Insight[],
+): Promise<{ variants: Variant[]; comparison: ComparisonRow[] }> {
+  const brief = buildBrief(sources, insights);
   const res = await withRetry(() => ai().models.generateContent({
     model: MODEL,
     contents: `User idea: "${topic}".\n\nSource insights:\n\n${brief}\n\nDesign the architecture variants now.`,
@@ -1226,6 +1245,29 @@ export async function synthesizeArchitectures(
     },
   }));
   return parseJson(res.text, 'Architect');
+}
+
+// Conversational refine — revise the previous variants per the user's instruction, grounded in
+// the SAME source insights. Reuses architectSchema so the cost row + citations stay enforced.
+export async function refineArchitectures(
+  topic: string,
+  sources: Source[],
+  insights: Insight[],
+  previousVariants: Variant[],
+  instruction: string,
+): Promise<{ variants: Variant[]; comparison: ComparisonRow[] }> {
+  const brief = buildBrief(sources, insights);
+  const previous = JSON.stringify(previousVariants, null, 2);
+  const res = await withRetry(() => ai().models.generateContent({
+    model: MODEL,
+    contents: `User idea: "${topic}".\n\nSource insights:\n\n${brief}\n\nPrevious variants (JSON):\n${previous}\n\nUser refine instruction: "${instruction}"\n\nRevise the variants now, grounded only in the insights above.`,
+    config: {
+      systemInstruction: ARCHITECT_REFINE_SYSTEM,
+      responseMimeType: 'application/json',
+      responseSchema: architectSchema,
+    },
+  }));
+  return parseJson(res.text, 'Refine');
 }
 ````
 
@@ -1421,7 +1463,7 @@ export default function Results({ result }: { result: RunResult }) {
 import { useCallback, useRef, useState } from 'react';
 import Results from './components/Results';
 import { CACHED_RUNS } from './constants';
-import { analyzeSources, scoutQueries, synthesizeArchitectures } from './services/gemini';
+import { analyzeSources, refineArchitectures, scoutQueries, synthesizeArchitectures } from './services/gemini';
 import { gatherSources } from './services/sources';
 import type { AgentName, LogEntry, RunResult } from './types';
 
@@ -1455,8 +1497,13 @@ export default function App() {
   const [result, setResult] = useState<RunResult | null>(null);
   const [error, setError] = useState('');
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [refineInput, setRefineInput] = useState('');
+  const [refining, setRefining] = useState(false);
   const logId = useRef(0);
   const runToken = useRef(0);
+
+  // Inputs are locked while a fresh run OR a refine is in flight.
+  const busy = phase === 'running' || refining;
 
   const log = useCallback((agent: AgentName, text: string, status: LogEntry['status'] = 'run') => {
     const id = ++logId.current;
@@ -1545,6 +1592,30 @@ export default function App() {
     } catch { /* superseded by a newer run */ }
   }
 
+  // Conversational refine — revise the current result's variants in place, keeping it visible.
+  async function runRefine(instruction: string) {
+    const instr = instruction.trim();
+    if (!instr || !result || busy) return;
+    setRefining(true);
+    const id = log('architect', `Refining: ${instr}`);
+    try {
+      const { variants, comparison } = await refineArchitectures(
+        result.topic, result.sources, result.insights, result.variants, instr,
+      );
+      settle(id, 'ok');
+      log('architect', `Reworked ${variants.length} variants + trade-off table`, 'ok');
+      const updated: RunResult = { ...result, variants, comparison };
+      setResult(updated);
+      setHistory(pushHistory({ topic: updated.topic, savedAt: Date.now(), result: updated }));
+      setRefineInput('');
+    } catch (e) {
+      settle(id, 'err');
+      log('system', e instanceof Error ? e.message : String(e), 'err');
+    } finally {
+      setRefining(false);
+    }
+  }
+
   const copyRunJson = () => {
     if (result) void navigator.clipboard.writeText(JSON.stringify(result, null, 2));
   };
@@ -1568,16 +1639,16 @@ export default function App() {
             onChange={(e) => setTopic(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && runLive(topic)}
             placeholder="e.g. a distributed database built on AI agents"
-            disabled={phase === 'running'}
+            disabled={busy}
           />
-          <button className="run" onClick={() => runLive(topic)} disabled={phase === 'running' || !topic.trim()}>
+          <button className="run" onClick={() => runLive(topic)} disabled={busy || !topic.trim()}>
             {phase === 'running' ? 'Drafting…' : 'Draft it'}
           </button>
         </div>
         <div className="chip-row demo-row">
           <span className="demo-label">Example blueprints — saved live runs:</span>
           {CACHED_RUNS.map((r) => (
-            <button key={r.topic} className="chip chip-btn" onClick={() => runCached(r)} disabled={phase === 'running'}>
+            <button key={r.topic} className="chip chip-btn" onClick={() => runCached(r)} disabled={busy}>
               ⚡ {r.topic}
             </button>
           ))}
@@ -1586,7 +1657,7 @@ export default function App() {
           <div className="chip-row history-row">
             <span className="demo-label">Your recent runs:</span>
             {history.map((h) => (
-              <button key={h.savedAt} className="chip chip-btn" onClick={() => runCached(h.result)} disabled={phase === 'running'}>
+              <button key={h.savedAt} className="chip chip-btn" onClick={() => runCached(h.result)} disabled={busy}>
                 ↻ {h.topic}
               </button>
             ))}
@@ -1613,7 +1684,27 @@ export default function App() {
             </ol>
           </aside>
         )}
-        {result && <Results result={result} />}
+        {result && (
+          <div className="results-wrap">
+            <Results result={result} />
+            <form
+              className="refine-bar"
+              onSubmit={(e) => { e.preventDefault(); runRefine(refineInput); }}
+            >
+              <input
+                className="refine-input"
+                value={refineInput}
+                onChange={(e) => setRefineInput(e.target.value)}
+                placeholder="Refine it — e.g. make it serverless, cut the vector DB, halve the cost"
+                disabled={busy}
+                aria-label="Refine the blueprint"
+              />
+              <button className="run refine-btn" type="submit" disabled={busy || !refineInput.trim()}>
+                {refining ? 'Refining…' : 'Refine'}
+              </button>
+            </form>
+          </div>
+        )}
         {!logs.length && (
           <div className="blank-slate">
             <p>Between an idea and the first line of code lie days of research.</p>

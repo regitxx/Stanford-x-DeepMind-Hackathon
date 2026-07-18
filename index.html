@@ -70,6 +70,14 @@
     background: var(--cyan); color: #06131f; border: 0; padding: 0 26px; border-radius: 2px; cursor: pointer;
   }
   .run:disabled { opacity: .45; cursor: default; }
+  .results-wrap { min-width: 0; }
+  .refine-bar { display: flex; gap: 10px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .refine-input {
+    flex: 1; background: var(--paper-2); border: 1px solid var(--line); color: var(--ink);
+    font-family: var(--body); font-size: 15px; padding: 12px 14px; border-radius: 2px; min-width: 0;
+  }
+  .refine-input:focus-visible, .refine-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .refine-btn { font-size: 14px; padding: 0 22px; }
   .demo-row { margin-top: 12px; align-items: center; }
   .demo-label { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); margin-right: 4px; }
   .error { color: var(--err); margin: 10px 0 0; }

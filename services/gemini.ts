@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { ANALYST_SYSTEM, ARCHITECT_SYSTEM, MODEL, SCOUT_SYSTEM } from '../constants';
+import { ANALYST_SYSTEM, ARCHITECT_REFINE_SYSTEM, ARCHITECT_SYSTEM, MODEL, SCOUT_SYSTEM } from '../constants';
 import type { ComparisonRow, Insight, Source, Variant } from '../types';
 
 function getApiKey(): string {
@@ -161,17 +161,22 @@ const architectSchema = {
   required: ['variants', 'comparison'],
 };
 
-export async function synthesizeArchitectures(
-  topic: string,
-  sources: Source[],
-  insights: Insight[],
-): Promise<{ variants: Variant[]; comparison: ComparisonRow[] }> {
-  const brief = insights
+// Shared source brief for both synthesize and refine — one line block per insight.
+function buildBrief(sources: Source[], insights: Insight[]): string {
+  return insights
     .map((i) => {
       const s = sources.find((x) => x.id === i.sourceId);
       return `[${i.sourceId}] ${s?.title ?? ''}\narchitecture: ${i.architecture}\nalgorithm: ${i.algorithmOrMath}\nlimitations: ${i.limitations}\nmetrics: ${i.metrics}\nrelevance: ${i.relevance}`;
     })
     .join('\n\n');
+}
+
+export async function synthesizeArchitectures(
+  topic: string,
+  sources: Source[],
+  insights: Insight[],
+): Promise<{ variants: Variant[]; comparison: ComparisonRow[] }> {
+  const brief = buildBrief(sources, insights);
   const res = await withRetry(() => ai().models.generateContent({
     model: MODEL,
     contents: `User idea: "${topic}".\n\nSource insights:\n\n${brief}\n\nDesign the architecture variants now.`,
@@ -182,4 +187,27 @@ export async function synthesizeArchitectures(
     },
   }));
   return parseJson(res.text, 'Architect');
+}
+
+// Conversational refine — revise the previous variants per the user's instruction, grounded in
+// the SAME source insights. Reuses architectSchema so the cost row + citations stay enforced.
+export async function refineArchitectures(
+  topic: string,
+  sources: Source[],
+  insights: Insight[],
+  previousVariants: Variant[],
+  instruction: string,
+): Promise<{ variants: Variant[]; comparison: ComparisonRow[] }> {
+  const brief = buildBrief(sources, insights);
+  const previous = JSON.stringify(previousVariants, null, 2);
+  const res = await withRetry(() => ai().models.generateContent({
+    model: MODEL,
+    contents: `User idea: "${topic}".\n\nSource insights:\n\n${brief}\n\nPrevious variants (JSON):\n${previous}\n\nUser refine instruction: "${instruction}"\n\nRevise the variants now, grounded only in the insights above.`,
+    config: {
+      systemInstruction: ARCHITECT_REFINE_SYSTEM,
+      responseMimeType: 'application/json',
+      responseSchema: architectSchema,
+    },
+  }));
+  return parseJson(res.text, 'Refine');
 }

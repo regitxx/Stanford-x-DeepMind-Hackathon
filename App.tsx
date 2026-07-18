@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import Results from './components/Results';
 import { CACHED_RUNS } from './constants';
-import { analyzeSources, scoutQueries, synthesizeArchitectures } from './services/gemini';
+import { analyzeSources, refineArchitectures, scoutQueries, synthesizeArchitectures } from './services/gemini';
 import { gatherSources } from './services/sources';
 import type { AgentName, LogEntry, RunResult } from './types';
 
@@ -35,8 +35,13 @@ export default function App() {
   const [result, setResult] = useState<RunResult | null>(null);
   const [error, setError] = useState('');
   const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
+  const [refineInput, setRefineInput] = useState('');
+  const [refining, setRefining] = useState(false);
   const logId = useRef(0);
   const runToken = useRef(0);
+
+  // Inputs are locked while a fresh run OR a refine is in flight.
+  const busy = phase === 'running' || refining;
 
   const log = useCallback((agent: AgentName, text: string, status: LogEntry['status'] = 'run') => {
     const id = ++logId.current;
@@ -125,6 +130,30 @@ export default function App() {
     } catch { /* superseded by a newer run */ }
   }
 
+  // Conversational refine — revise the current result's variants in place, keeping it visible.
+  async function runRefine(instruction: string) {
+    const instr = instruction.trim();
+    if (!instr || !result || busy) return;
+    setRefining(true);
+    const id = log('architect', `Refining: ${instr}`);
+    try {
+      const { variants, comparison } = await refineArchitectures(
+        result.topic, result.sources, result.insights, result.variants, instr,
+      );
+      settle(id, 'ok');
+      log('architect', `Reworked ${variants.length} variants + trade-off table`, 'ok');
+      const updated: RunResult = { ...result, variants, comparison };
+      setResult(updated);
+      setHistory(pushHistory({ topic: updated.topic, savedAt: Date.now(), result: updated }));
+      setRefineInput('');
+    } catch (e) {
+      settle(id, 'err');
+      log('system', e instanceof Error ? e.message : String(e), 'err');
+    } finally {
+      setRefining(false);
+    }
+  }
+
   const copyRunJson = () => {
     if (result) void navigator.clipboard.writeText(JSON.stringify(result, null, 2));
   };
@@ -148,16 +177,16 @@ export default function App() {
             onChange={(e) => setTopic(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && runLive(topic)}
             placeholder="e.g. a distributed database built on AI agents"
-            disabled={phase === 'running'}
+            disabled={busy}
           />
-          <button className="run" onClick={() => runLive(topic)} disabled={phase === 'running' || !topic.trim()}>
+          <button className="run" onClick={() => runLive(topic)} disabled={busy || !topic.trim()}>
             {phase === 'running' ? 'Drafting…' : 'Draft it'}
           </button>
         </div>
         <div className="chip-row demo-row">
           <span className="demo-label">Example blueprints — saved live runs:</span>
           {CACHED_RUNS.map((r) => (
-            <button key={r.topic} className="chip chip-btn" onClick={() => runCached(r)} disabled={phase === 'running'}>
+            <button key={r.topic} className="chip chip-btn" onClick={() => runCached(r)} disabled={busy}>
               ⚡ {r.topic}
             </button>
           ))}
@@ -166,7 +195,7 @@ export default function App() {
           <div className="chip-row history-row">
             <span className="demo-label">Your recent runs:</span>
             {history.map((h) => (
-              <button key={h.savedAt} className="chip chip-btn" onClick={() => runCached(h.result)} disabled={phase === 'running'}>
+              <button key={h.savedAt} className="chip chip-btn" onClick={() => runCached(h.result)} disabled={busy}>
                 ↻ {h.topic}
               </button>
             ))}
@@ -193,7 +222,27 @@ export default function App() {
             </ol>
           </aside>
         )}
-        {result && <Results result={result} />}
+        {result && (
+          <div className="results-wrap">
+            <Results result={result} />
+            <form
+              className="refine-bar"
+              onSubmit={(e) => { e.preventDefault(); runRefine(refineInput); }}
+            >
+              <input
+                className="refine-input"
+                value={refineInput}
+                onChange={(e) => setRefineInput(e.target.value)}
+                placeholder="Refine it — e.g. make it serverless, cut the vector DB, halve the cost"
+                disabled={busy}
+                aria-label="Refine the blueprint"
+              />
+              <button className="run refine-btn" type="submit" disabled={busy || !refineInput.trim()}>
+                {refining ? 'Refining…' : 'Refine'}
+              </button>
+            </form>
+          </div>
+        )}
         {!logs.length && (
           <div className="blank-slate">
             <p>Between an idea and the first line of code lie days of research.</p>

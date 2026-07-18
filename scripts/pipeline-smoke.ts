@@ -5,7 +5,7 @@
 // One env var works everywhere: gemini.ts reads process.env.API_KEY.
 process.env.API_KEY ||= process.env.GEMINI_API_KEY;
 
-import { analyzeSources, scoutQueries, synthesizeArchitectures } from '../services/gemini';
+import { analyzeSources, refineArchitectures, scoutQueries, synthesizeArchitectures } from '../services/gemini';
 import { gatherSources } from '../services/sources';
 import type { ComparisonRow, Insight, Source, Variant } from '../types';
 
@@ -29,6 +29,30 @@ let failed = 0;
 function check(label: string, ok: boolean, detail = ''): void {
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${label}${detail ? ` — ${detail}` : ''}`);
   if (!ok) failed++;
+}
+
+// The 4 shape checks, reusable for both the architect and the refined output.
+function runChecks(variants: Variant[], comparison: ComparisonRow[], sourceIds: Set<string>): void {
+  check('≥2 variants', variants.length >= 2, `got ${variants.length}`);
+
+  const missingMermaid = variants.filter((v) => !v.mermaid?.trim());
+  check('every variant has non-empty mermaid', missingMermaid.length === 0,
+    missingMermaid.length ? `${missingMermaid.length} missing: ${missingMermaid.map((v) => v.id).join(', ')}` : '');
+
+  const danglingRefs: string[] = [];
+  for (const v of variants) {
+    for (const c of v.components) {
+      for (const sid of c.sourceIds) {
+        if (!sourceIds.has(sid)) danglingRefs.push(`${v.id}/${c.name}→${sid}`);
+      }
+    }
+  }
+  check('every component sourceId exists in sources', danglingRefs.length === 0,
+    danglingRefs.length ? danglingRefs.slice(0, 5).join(', ') : '');
+
+  const badRows = comparison.filter((r) => r.values.length !== variants.length);
+  check('comparison rows have values.length === variants.length', badRows.length === 0,
+    badRows.length ? `${badRows.length} misaligned: ${badRows.map((r) => `${r.criterion}(${r.values.length})`).join(', ')}` : '');
 }
 
 async function main(): Promise<void> {
@@ -63,34 +87,36 @@ async function main(): Promise<void> {
   );
   console.log(`  variants: ${variants.length}, comparison rows: ${comparison.length}`);
 
-  // ---------------- Validation ----------------
-  console.log('\nChecks:');
-
-  check('≥2 variants', variants.length >= 2, `got ${variants.length}`);
-
-  const missingMermaid = variants.filter((v) => !v.mermaid?.trim());
-  check('every variant has non-empty mermaid', missingMermaid.length === 0,
-    missingMermaid.length ? `${missingMermaid.length} missing: ${missingMermaid.map((v) => v.id).join(', ')}` : '');
-
+  // ---------------- Validation (architect) ----------------
   const sourceIds = new Set(sources.map((s) => s.id));
-  const danglingRefs: string[] = [];
-  for (const v of variants) {
-    for (const c of v.components) {
-      for (const sid of c.sourceIds) {
-        if (!sourceIds.has(sid)) danglingRefs.push(`${v.id}/${c.name}→${sid}`);
-      }
-    }
-  }
-  check('every component sourceId exists in sources', danglingRefs.length === 0,
-    danglingRefs.length ? danglingRefs.slice(0, 5).join(', ') : '');
-
-  const badRows = comparison.filter((r) => r.values.length !== variants.length);
-  check('comparison rows have values.length === variants.length', badRows.length === 0,
-    badRows.length ? `${badRows.length} misaligned: ${badRows.map((r) => `${r.criterion}(${r.values.length})`).join(', ')}` : '');
+  console.log('\nArchitect checks:');
+  runChecks(variants, comparison, sourceIds);
 
   // Pretty-print the first variant for eyeballing.
   console.log('\nFirst variant:');
   console.log(JSON.stringify(variants[0], null, 2));
+
+  if (failed !== 0) {
+    console.log(`\n${failed} CHECK(S) FAILED — skipping refine.`);
+    process.exit(1);
+  }
+
+  // ---------------- Refine ----------------
+  const REFINE = 'make the cheapest variant fully serverless';
+  console.log(`\nRefine instruction: "${REFINE}"`);
+  const refined = await stage<{ variants: Variant[]; comparison: ComparisonRow[] }>(
+    'refine',
+    () => refineArchitectures(TOPIC, sources, insights, variants, REFINE),
+  );
+  console.log(`  refined variants: ${refined.variants.length}, comparison rows: ${refined.comparison.length}`);
+
+  console.log('\nRefine checks:');
+  runChecks(refined.variants, refined.comparison, sourceIds);
+
+  // Cost row must survive the refine (mandated by ARCHITECT_SYSTEM).
+  const costRow = refined.comparison.find((r) => /rough monthly cost/i.test(r.criterion));
+  check('comparison contains a cost row', !!costRow,
+    costRow ? `"${costRow.criterion}" = ${JSON.stringify(costRow.values)}` : 'no "Rough monthly cost" row found');
 
   console.log(`\n${failed === 0 ? 'ALL CHECKS PASSED' : `${failed} CHECK(S) FAILED`}`);
   process.exit(failed === 0 ? 0 : 1);
