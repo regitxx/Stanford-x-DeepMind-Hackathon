@@ -11,12 +11,30 @@ const AGENT_TAG: Record<AgentName, string> = {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Run history — last 5 successful live runs, newest first, persisted in localStorage.
+const HISTORY_KEY = 'bp.history';
+interface HistoryEntry { topic: string; savedAt: number; result: RunResult; }
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    return Array.isArray(raw) ? raw : [];
+  } catch { return []; }
+}
+
+function pushHistory(entry: HistoryEntry): HistoryEntry[] {
+  const next = [entry, ...loadHistory().filter((h) => h.topic !== entry.topic)].slice(0, 5);
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch { /* quota / SSR — non-fatal */ }
+  return next;
+}
+
 export default function App() {
   const [topic, setTopic] = useState('');
   const [phase, setPhase] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [result, setResult] = useState<RunResult | null>(null);
   const [error, setError] = useState('');
+  const [history, setHistory] = useState<HistoryEntry[]>(() => loadHistory());
   const logId = useRef(0);
   const runToken = useRef(0);
 
@@ -68,8 +86,10 @@ export default function App() {
       log('system', 'Blueprint ready. Every block links to a source.', 'ok');
 
       if (runToken.current !== token) return;
-      setResult({ topic: t, sources, insights, variants, comparison });
+      const run: RunResult = { topic: t, sources, insights, variants, comparison };
+      setResult(run);
       setPhase('done');
+      setHistory(pushHistory({ topic: t, savedAt: Date.now(), result: run }));
     } catch (e) {
       if (runToken.current !== token) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -135,13 +155,23 @@ export default function App() {
           </button>
         </div>
         <div className="chip-row demo-row">
-          <span className="demo-label">Cached demos (instant, offline-safe):</span>
+          <span className="demo-label">Example blueprints — saved live runs:</span>
           {CACHED_RUNS.map((r) => (
             <button key={r.topic} className="chip chip-btn" onClick={() => runCached(r)} disabled={phase === 'running'}>
               ⚡ {r.topic}
             </button>
           ))}
         </div>
+        {history.length > 0 && (
+          <div className="chip-row history-row">
+            <span className="demo-label">Your recent runs:</span>
+            {history.map((h) => (
+              <button key={h.savedAt} className="chip chip-btn" onClick={() => runCached(h.result)} disabled={phase === 'running'}>
+                ↻ {h.topic}
+              </button>
+            ))}
+          </div>
+        )}
         {error && <p className="error" role="alert">{error}</p>}
       </section>
 

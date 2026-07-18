@@ -24,15 +24,32 @@ function parseJson<T>(raw: string | undefined, stage: string): T {
   }
 }
 
+// Retry only transient capacity/availability errors. Backoff: 2s then 5s, each + 0–500ms jitter.
+async function withRetry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
+  const delays = [2000, 5000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const retryable = /429|RESOURCE_EXHAUSTED|503|UNAVAILABLE/i.test(msg);
+      if (!retryable || attempt >= tries - 1) throw err;
+      const wait = delays[Math.min(attempt, delays.length - 1)] + Math.floor(Math.random() * 500);
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
 // ---------------- 1 · Scout ----------------
 
 export async function scoutQueries(topic: string): Promise<{ arxivQueries: string[]; githubQueries: string[] }> {
-  const res = await ai().models.generateContent({
+  const res = await withRetry(() => ai().models.generateContent({
     model: MODEL,
     contents: `Product idea: "${topic}". Produce search queries.`,
     config: {
       systemInstruction: SCOUT_SYSTEM,
       responseMimeType: 'application/json',
+      thinkingConfig: { thinkingLevel: 'low' } as any, // low reasoning is enough for query generation; cuts latency
       responseSchema: {
         type: Type.OBJECT,
         properties: {
@@ -42,7 +59,7 @@ export async function scoutQueries(topic: string): Promise<{ arxivQueries: strin
         required: ['arxivQueries', 'githubQueries'],
       },
     },
-  });
+  }));
   return parseJson(res.text, 'Scout');
 }
 
@@ -74,15 +91,16 @@ export async function analyzeSources(topic: string, sources: Source[]): Promise<
   const corpus = sources
     .map((s) => `[${s.id}] (${s.origin}) ${s.title}\n${s.snippet}`)
     .join('\n\n---\n\n');
-  const res = await ai().models.generateContent({
+  const res = await withRetry(() => ai().models.generateContent({
     model: MODEL,
     contents: `User idea: "${topic}".\n\nExtract insights for EVERY source below (one entry per sourceId).\n\n${corpus}`,
     config: {
       systemInstruction: ANALYST_SYSTEM,
       responseMimeType: 'application/json',
+      thinkingConfig: { thinkingLevel: 'low' } as any, // extraction is grounded in the corpus; low reasoning cuts latency
       responseSchema: insightSchema,
     },
-  });
+  }));
   return parseJson<{ insights: Insight[] }>(res.text, 'Analyst').insights;
 }
 
@@ -146,14 +164,14 @@ export async function synthesizeArchitectures(
       return `[${i.sourceId}] ${s?.title ?? ''}\narchitecture: ${i.architecture}\nalgorithm: ${i.algorithmOrMath}\nlimitations: ${i.limitations}\nmetrics: ${i.metrics}\nrelevance: ${i.relevance}`;
     })
     .join('\n\n');
-  const res = await ai().models.generateContent({
+  const res = await withRetry(() => ai().models.generateContent({
     model: MODEL,
     contents: `User idea: "${topic}".\n\nSource insights:\n\n${brief}\n\nDesign the architecture variants now.`,
     config: {
-      systemInstruction: ARCHITECT_SYSTEM,
+      systemInstruction: ARCHITECT_SYSTEM, // architect keeps default thinking — it does the hard synthesis
       responseMimeType: 'application/json',
       responseSchema: architectSchema,
     },
-  });
+  }));
   return parseJson(res.text, 'Architect');
 }

@@ -1,4 +1,4 @@
-import { SOURCE_LIMITS, USE_ARXIV_PROXY } from '../constants';
+import { SOURCE_LIMITS } from '../constants';
 import type { Source } from '../types';
 
 const clean = (s: string) => s.replace(/\s+/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
@@ -33,14 +33,15 @@ async function fetchText(url: string): Promise<string> {
   return r.text();
 }
 
-export async function searchArxiv(query: string, max: number): Promise<Omit<Source, 'id'>[]> {
+// Try direct first; on ANY failure (CORS, network, non-200) retry once through a
+// public CORS proxy. `via` tells the caller which path actually produced the results.
+export async function searchArxiv(query: string, max: number): Promise<{ items: Omit<Source, 'id'>[]; via: 'direct' | 'proxy' }> {
   const direct = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&max_results=${max}&sortBy=relevance`;
   try {
-    return parseArxivAtom(await fetchText(direct));
-  } catch (err) {
-    if (!USE_ARXIV_PROXY) throw err;
+    return { items: parseArxivAtom(await fetchText(direct)), via: 'direct' };
+  } catch {
     const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(direct)}`;
-    return parseArxivAtom(await fetchText(proxied));
+    return { items: parseArxivAtom(await fetchText(proxied)), via: 'proxy' };
   }
 }
 
@@ -98,8 +99,10 @@ export async function gatherSources(arxivQueries: string[], githubQueries: strin
   const paperBatches = await Promise.allSettled(
     arxivQueries.slice(0, 2).map((q) => searchArxiv(q, Math.ceil(SOURCE_LIMITS.arxiv / Math.min(arxivQueries.length, 2)))),
   );
-  const papers = paperBatches.flatMap((b) => (b.status === 'fulfilled' ? b.value : []));
-  if (papers.length) log(`arXiv: ${papers.length} papers found`);
+  const fulfilledPapers = paperBatches.flatMap((b) => (b.status === 'fulfilled' ? [b.value] : []));
+  const papers = fulfilledPapers.flatMap((r) => r.items);
+  const viaProxy = fulfilledPapers.some((r) => r.via === 'proxy');
+  if (papers.length) log(`arXiv ${viaProxy ? 'via proxy' : 'direct'}: ${papers.length} papers found`);
   else log('arXiv unavailable — continuing with GitHub only');
 
   const repoBatches = await Promise.allSettled(
