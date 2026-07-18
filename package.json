@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "scripts": { "dev": "vite", "build": "vite build", "typecheck": "tsc --noEmit", "smoke": "tsx scripts/smoke.ts" },
+  "scripts": { "dev": "vite", "build": "vite build", "typecheck": "tsc --noEmit", "smoke": "tsx scripts/smoke.ts", "pipeline": "tsx scripts/pipeline-smoke.ts" },
   "dependencies": {
     "@google/genai": "^1.16.0",
     "mermaid": "^11.4.0",
