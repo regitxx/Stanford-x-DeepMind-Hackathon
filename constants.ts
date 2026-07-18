@@ -1,7 +1,7 @@
-// Free tier: 'gemini-3-flash-preview' (~10 RPM / 1,500 RPD).
-// Once billing is enabled on the deploy project, switch to 'gemini-3.5-flash'.
-// Override with GEMINI_MODEL in Node/CI; the `typeof process` guard keeps the browser build safe.
-export const MODEL = (typeof process !== 'undefined' && process.env?.GEMINI_MODEL) || 'gemini-3-flash-preview';
+// Flagship default: 'gemini-3.5-flash' (requires billing enabled on the deploy project).
+// Free-tier fallback: set GEMINI_MODEL='gemini-3-flash-preview' (~10 RPM / 1,500 RPD) to override.
+// The `typeof process` guard keeps the browser build safe.
+export const MODEL = (typeof process !== 'undefined' && process.env?.GEMINI_MODEL) || 'gemini-3.5-flash';
 
 export const SOURCE_LIMITS = { arxiv: 4, github: 3, total: 7 };
 

@@ -11,7 +11,7 @@ Complete, typechecked, production-building app. Verified in sandbox: arXiv Atom 
 1. On the clean deploy account, open aistudio.google.com → Build → new app → paste the short bootstrap prompt from AISTUDIO_PROMPT.md.
 2. Open the code editor pane. Replace generated files with this repo's files in this order: `metadata.json`, `index.html`, `types.ts`, `examples.generated.ts`, `constants.ts`, `services/sources.ts`, `services/gemini.ts`, `components/Results.tsx`, `App.tsx`, `index.tsx`. (Or run `npm run pastepack` and paste from the generated `AISTUDIO_PASTE.md`.)
 3. Preview → run a live topic ("agentic web scraping framework"). Watch the console: Scout → Analyst → Architect.
-   - arXiv CORS error? Set `USE_ARXIV_PROXY = true` in `constants.ts` (app still works GitHub-only regardless).
+   - arXiv unreachable? `searchArxiv` auto-retries through a CORS proxy, and the app continues GitHub-only regardless — no action needed.
    - 429s? You're on free tier: `gemini-3-flash-preview` at ~10 RPM is fine for a 3-call pipeline; wait 60s between runs.
 4. Test both cached demos (⚡ chips) — these must be flawless; they're your playcast.
 5. Publish → Cloud Run → open the URL in incognito. Then connect GitHub and push.
@@ -31,8 +31,7 @@ Local dev alternative: `npm i && GEMINI_API_KEY=xxx npm run dev` · checks: `npm
 - 14:30–17:00 — Both: blast the video to your networks (engagement counts until 17:00). Prep the 5-min pitch (tезисы are in your planning doc) in case you make finals at 16:00.
 
 ## Config knobs
-- `constants.ts` → `MODEL`: `gemini-3-flash-preview` (free tier) → switch to `gemini-3.5-flash` after enabling billing Sunday morning.
-- `constants.ts` → `USE_ARXIV_PROXY`: flip if arXiv CORS blocks direct browser calls.
+- `MODEL`: defaults to `gemini-3.5-flash` (needs billing). On free tier, set `GEMINI_MODEL=gemini-3-flash-preview` to override — no code edit.
 - Cached runs: run live once, click **Copy run JSON** in the console header, paste over a cache entry. Instant, zero-risk demo refresh.
 
 ## Contingencies
